@@ -9,6 +9,8 @@
 
 extern NSString * const CMDEncryptedSQLiteStoreType;
 extern NSString * const CMDEncryptedSQLiteStorePassphraseKey;
+extern NSString * const CMDEncryptedSQLiteStoreAccount;
+extern NSString * const CMDEncryptedSQLiteStoreService;
 extern NSString * const CMDEncryptedSQLiteStoreErrorDomain;
 extern NSString * const CMDEncryptedSQLiteStoreErrorMessageKey;
 

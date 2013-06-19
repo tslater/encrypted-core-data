@@ -10,11 +10,13 @@
 #endif
 
 #import <sqlite3.h>
-
+#import <SecureFoundation/SecureFoundation.h>
 #import "CMDEncryptedSQLiteStore.h"
 
 NSString * const CMDEncryptedSQLiteStoreType = @"CMDEncryptedSQLiteStore";
 NSString * const CMDEncryptedSQLiteStorePassphraseKey = @"CMDEncryptedSQLiteStorePassphrase";
+NSString * const CMDEncryptedSQLiteStoreService = @"CMDEncryptedSQLiteStoreService";
+NSString * const CMDEncryptedSQLiteStoreAccount = @"CMDEncryptedSQLiteStoreAccount";
 NSString * const CMDEncryptedSQLiteStoreErrorDomain = @"CMDEncryptedSQLiteStoreErrorDomain";
 NSString * const CMDEncryptedSQLiteStoreErrorMessageKey = @"CMDEncryptedSQLiteStoreErrorMessage";
 static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
@@ -517,19 +519,7 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 
 #pragma mark - passphrase
 
-- (BOOL)configureDatabasePassphrase {
-    NSString *passphrase = [[self options] objectForKey:CMDEncryptedSQLiteStorePassphraseKey];
-    if (passphrase) {
-        const char *string = [passphrase UTF8String];
-        int status = sqlite3_key(database, string, strlen(string));
-        string = NULL;
-        passphrase = nil;
-        return (status == SQLITE_OK);
-    }
-    passphrase = nil;
-    return YES;
-}
-
+			
 #pragma mark - migration helpers
 
 - (BOOL)migrateFromModel:(NSManagedObjectModel *)fromModel toModel:(NSManagedObjectModel *)toModel error:(NSError **)error {
