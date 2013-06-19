@@ -82,6 +82,26 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
     }
 }
 
+- (BOOL)configureDatabasePassphrase {
+    NSString *passphrase = [[self options] objectForKey:CMDEncryptedSQLiteStorePassphraseKey];
+    NSString *service = [[self options] objectForKey:CMDEncryptedSQLiteStoreService];
+    NSString *account = [[self options] objectForKey:CMDEncryptedSQLiteStoreAccount];
+    if(service && account) {
+        passphrase = [IMSKeychain securePasswordForService:service account:account];
+    }
+    if (passphrase) {
+        passphrase = [NSString stringWithFormat:@"%@%@%@",passphrase,[[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleDisplayName"],passphrase];
+        const char *string = [passphrase UTF8String];
+        int status = sqlite3_key(database, string, strlen(string));
+        string = NULL;
+        passphrase = nil;
+        return (status == SQLITE_OK);
+    }
+    
+    passphrase = nil;
+    return YES;
+}
+
 #pragma mark - incremental store functions
 
 - (id)initWithPersistentStoreCoordinator:(NSPersistentStoreCoordinator *)root
@@ -1403,6 +1423,7 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 }
 
 @end
+
 
 #pragma mark - category implementations
 
