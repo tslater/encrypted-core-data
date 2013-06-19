@@ -519,7 +519,7 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 
 #pragma mark - passphrase
 
-			
+
 #pragma mark - migration helpers
 
 - (BOOL)migrateFromModel:(NSManagedObjectModel *)fromModel toModel:(NSManagedObjectModel *)toModel error:(NSError **)error {
