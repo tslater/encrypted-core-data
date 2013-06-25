@@ -9,7 +9,6 @@
 #error This class requires ARC.
 #endif
 
-
 #import <sqlite3.h>
 #import <SecureFoundation/SecureFoundation.h>
 #import "CMDEncryptedSQLiteStore.h"
@@ -104,7 +103,7 @@ static bool unEnc = false;
     NSString *account = [[self options] objectForKey:CMDEncryptedSQLiteStoreAccount];
     if(service && account) {
         passphrase = [IMSKeychain securePasswordForService:service account:account];
-        NSLog(@"+UNENCRYPTED");
+        //NSLog(@"+UNENCRYPTED");
     }
     if (passphrase) {
         passphrase = [NSString stringWithFormat:@"%@%@%@",passphrase,[[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleDisplayName"],passphrase];
@@ -122,7 +121,7 @@ static bool unEnc = false;
 - (BOOL)clearDatabasePassphrase {
     NSString *passphrase = [[NSUUID UUID] UUIDString];
     if (passphrase) {
-        NSLog(@"-ENCRYPTED");
+        //NSLog(@"-ENCRYPTED");
         int status = [self keySetup:passphrase];
         unEnc = NO;
         
@@ -140,7 +139,7 @@ static bool unEnc = false;
                        configurationName:(NSString *)name
                                      URL:(NSURL *)URL
                                  options:(NSDictionary *)options {
-    NSLog(@"function: initWithPersistentStoreCoordinator");
+    //NSLog(@"function: initWithPersistentStoreCoordinator");
     self = [super initWithPersistentStoreCoordinator:root configurationName:name URL:URL options:options];
     if (self) {
         objectIDCache = [NSMutableDictionary dictionary];
@@ -157,7 +156,7 @@ static bool unEnc = false;
 }
 
 - (NSArray *)obtainPermanentIDsForObjects:(NSArray *)array error:(NSError **)error {
-    NSLog(@"function: obtainPermanentIDsForObjects");
+    //NSLog(@"function: obtainPermanentIDsForObjects");
     [self configureDatabasePassphrase];
     NSMutableArray *__block objectIDs = [NSMutableArray arrayWithCapacity:[array count]];
     [array enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
@@ -181,7 +180,7 @@ static bool unEnc = false;
 - (id)executeRequest:(NSPersistentStoreRequest *)request
          withContext:(NSManagedObjectContext *)context
                error:(NSError **)error {
-    NSLog(@"function: executeRequest");
+    //NSLog(@"function: executeRequest");
     [self configureDatabasePassphrase];
     if ([request requestType] == NSFetchRequestType) {
         
@@ -261,7 +260,7 @@ static bool unEnc = false;
 - (NSIncrementalStoreNode *)newValuesForObjectWithID:(NSManagedObjectID *)objectID
                                          withContext:(NSManagedObjectContext *)context
                                                error:(NSError **)error {
-    NSLog(@"function: newValuesForObjectWithID");
+    //NSLog(@"function: newValuesForObjectWithID");
 
     // cache hit
     {
@@ -331,7 +330,7 @@ static bool unEnc = false;
               forObjectWithID:(NSManagedObjectID *)objectID
                   withContext:(NSManagedObjectContext *)context
                         error:(NSError **)error {
-    NSLog(@"function: newValueForRelationship");
+    //NSLog(@"function: newValueForRelationship");
 
     // prepare values
     unsigned long long key = [[self referenceObjectForObjectID:objectID] unsignedLongLongValue];
@@ -393,7 +392,7 @@ static bool unEnc = false;
 }
 
 - (void)managedObjectContextDidRegisterObjectsWithIDs:(NSArray *)objectIDs {
-    NSLog(@"function: managedObjectContextDidRegisterObjectsWithIDs");
+    //NSLog(@"function: managedObjectContextDidRegisterObjectsWithIDs");
     [self configureDatabasePassphrase];
     [objectIDs enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
         NSUInteger value = [[objectCountCache objectForKey:obj] unsignedIntegerValue];
@@ -403,7 +402,7 @@ static bool unEnc = false;
 }
 
 - (void)managedObjectContextDidUnregisterObjectsWithIDs:(NSArray *)objectIDs {
-    NSLog(@"function: managedObjectContextDidUnregisterObjectsWithIDs");
+    //NSLog(@"function: managedObjectContextDidUnregisterObjectsWithIDs");
 
     [objectIDs enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
         NSNumber *value = [objectCountCache objectForKey:obj];
@@ -425,7 +424,7 @@ static bool unEnc = false;
 #pragma mark - metadata helpers
 
 - (BOOL)loadMetadata:(NSError **)error {
-    NSLog(@"function: loadMetadata");
+    //NSLog(@"function: loadMetadata");
 
     if (sqlite3_open([[[self URL] path] UTF8String], &database) == SQLITE_OK) {
         
@@ -560,7 +559,7 @@ static bool unEnc = false;
 }
 
 - (BOOL)hasMetadataTable:(BOOL *)hasTable error:(NSError **)error {
-    NSLog(@"function: hasMetadataTable");
+    //NSLog(@"function: hasMetadataTable");
 
     int count = 0;
     NSString *string = [NSString stringWithFormat:
@@ -581,11 +580,11 @@ static bool unEnc = false;
 }
 
 - (BOOL)saveMetadata {
-    NSLog(@"function: saveMetadata");
+    //NSLog(@"function: saveMetadata");
 
     NSString *string;
     sqlite3_stmt *statement;
- //   [self configureDatabasePassphrase];
+
     // delete
     string = [NSString stringWithFormat:
               @"DELETE FROM %@;",
@@ -614,7 +613,7 @@ static bool unEnc = false;
 
 - (BOOL)migrateFromModel:(NSManagedObjectModel *)fromModel toModel:(NSManagedObjectModel *)toModel error:(NSError **)error {
     BOOL __block succuess = YES;
-    NSLog(@"function: migrateFromModel");
+    //NSLog(@"function: migrateFromModel");
 
     // generate mapping model
     NSMappingModel *mappingModel = [NSMappingModel
@@ -667,7 +666,7 @@ static bool unEnc = false;
 
 - (BOOL)initializeDatabaseWithModel:(NSManagedObjectModel *)model {
     
-    NSLog(@"function: initializeDatabaseWithModel");
+    //NSLog(@"function: initializeDatabaseWithModel");
 
     BOOL __block success = YES;
     [[model entities] enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
@@ -680,7 +679,7 @@ static bool unEnc = false;
 }
 
 - (BOOL)createTableForEntity:(NSEntityDescription *)entity {
-    NSLog(@"function: createTableForEntity");
+    //NSLog(@"function: createTableForEntity");
 
     // prepare columns
     NSMutableArray *columns = [NSMutableArray arrayWithObject:@"id integer primary key"];
@@ -709,14 +708,14 @@ static bool unEnc = false;
 }
 
 - (BOOL)dropTableForEntity:(NSEntityDescription *)entity {
-    NSLog(@"function: dropTableForEntity");
+    //NSLog(@"function: dropTableForEntity");
 
     NSString *name = [self tableNameForEntity:entity];
     return [self dropTableNamed:name];
 }
 
 - (BOOL)dropTableNamed:(NSString *)name {
-    NSLog(@"function: dropTableNamed");
+    //NSLog(@"function: dropTableNamed");
 
     NSString *string = [NSString stringWithFormat:
                         @"DROP TABLE %@;",
@@ -729,7 +728,7 @@ static bool unEnc = false;
 - (BOOL)alterTableForSourceEntity:(NSEntityDescription *)sourceEntity
                 destinationEntity:(NSEntityDescription *)destinationEntity
                       withMapping:(NSEntityMapping *)mapping {
-    NSLog(@"function: alterTableForSourceEntity");
+    //NSLog(@"function: alterTableForSourceEntity");
 
     NSString *string;
     sqlite3_stmt *statement;
@@ -802,29 +801,25 @@ static bool unEnc = false;
 #pragma mark - save changes to the database
 
 - (NSArray *)handleSaveChangesRequest:(NSSaveChangesRequest *)request error:(NSError **)error {
-    NSLog(@"function: handleSaveChangesRequest");
+    //NSLog(@"function: handleSaveChangesRequest");
 
- //   [self configureDatabasePassphrase];
     NSMutableDictionary *localNodeCache = [nodeCache mutableCopy];
     BOOL success = [self performInTransaction:^{
         BOOL insert = [self handleInsertedObjectsInSaveReuqest:request error:error];
         BOOL update = [self handleUpdatedObjectsInSaveReuqest:request cache:localNodeCache error:error];
         BOOL delete = [self handleDeletedObjectsInSaveReuqest:request error:error];
-      //  [self clearDatabasePassphrase];
         return (BOOL)(insert && update && delete);
     }];
     if (success) {
         nodeCache = localNodeCache;
-    //    [self clearDatabasePassphrase];
         return [NSArray array];
     }
     if (error) { *error = [self databaseError]; }
-  //  [self clearDatabasePassphrase];
     return nil;
 }
 
 - (BOOL)handleInsertedObjectsInSaveReuqest:(NSSaveChangesRequest *)request error:(NSError **)error {
-    NSLog(@"function: handleInsertedObjectsInSaveRequest");
+    //NSLog(@"function: handleInsertedObjectsInSaveRequest");
 
     BOOL __block success = YES;
     [[request insertedObjects] enumerateObjectsUsingBlock:^(NSManagedObject *object, BOOL *stop) {
@@ -890,7 +885,7 @@ static bool unEnc = false;
 }
 
 - (BOOL)handleUpdatedObjectsInSaveReuqest:(NSSaveChangesRequest *)request cache:(NSMutableDictionary *)cache error:(NSError **)error {
-    NSLog(@"function: handleUpdatedObjectsInSaveRequest");
+    //NSLog(@"function: handleUpdatedObjectsInSaveRequest");
 
     BOOL __block success = YES;
     [[request updatedObjects] enumerateObjectsUsingBlock:^(NSManagedObject *object, BOOL *stop) {
@@ -998,7 +993,7 @@ static bool unEnc = false;
 
 - (BOOL)handleDeletedObjectsInSaveReuqest:(NSSaveChangesRequest *)request error:(NSError **)error {
     BOOL __block success = YES;
-    NSLog(@"function: handleDeletedObjectsInSaveReuqest");
+    //NSLog(@"function: handleDeletedObjectsInSaveReuqest");
 
     [[request deletedObjects] enumerateObjectsUsingBlock:^(NSManagedObject *object, BOOL *stop) {
         
@@ -1043,7 +1038,7 @@ static bool unEnc = false;
 
 - (BOOL)performInTransaction:(BOOL (^) ())block {
     [self configureDatabasePassphrase];
-    NSLog(@"function: performInTransaction");
+    //NSLog(@"function: performInTransaction");
 
     sqlite3_stmt *statement = NULL;
     
@@ -1073,7 +1068,7 @@ static bool unEnc = false;
 }
 
 - (NSString *)tableNameForEntity:(NSEntityDescription *)entity {
-    NSLog(@"function: tableNameForEntity");
+    //NSLog(@"function: tableNameForEntity");
 
     NSEntityDescription *targetEntity = entity;
     while ([targetEntity superentity] != nil) {
@@ -1083,7 +1078,7 @@ static bool unEnc = false;
 }
 
 - (sqlite3_stmt *)preparedStatementForQuery:(NSString *)query {
-    NSLog(@"function: preparedStatementForQuery");
+    //NSLog(@"function: preparedStatementForQuery");
 
     static BOOL debug = NO;
     static dispatch_once_t token;
@@ -1097,7 +1092,7 @@ static bool unEnc = false;
 }
 
 - (NSString *)orderClauseWithSortDescriptors:(NSArray *)descriptors {
-    NSLog(@"function: orderClauseWithSortDescriptors");
+    //NSLog(@"function: orderClauseWithSortDescriptors");
 
     NSMutableArray *columns = [NSMutableArray arrayWithCapacity:[descriptors count]];
     [descriptors enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
@@ -1113,7 +1108,7 @@ static bool unEnc = false;
 }
 
 - (NSNumber *)maximumObjectIDInTable:(NSString *)table {
-    NSLog(@"function: maximumObjectIDInTable");
+    //NSLog(@"function: maximumObjectIDInTable");
 
     NSNumber *value = [objectIDCache objectForKey:table];
     if (value == nil) {
@@ -1193,7 +1188,7 @@ static bool unEnc = false;
 - (id)valueForProperty:(NSPropertyDescription *)property
            inStatement:(sqlite3_stmt *)statement
                atIndex:(int)index {
-    NSLog(@"function: valueForProperty");
+    //NSLog(@"function: valueForProperty");
 
     if (sqlite3_column_type(statement, index) == SQLITE_NULL) { return nil; }
     if ([property isKindOfClass:[NSAttributeDescription class]]) {
@@ -1276,7 +1271,7 @@ static bool unEnc = false;
  
  */
 - (NSDictionary *)whereClauseWithFetchRequest:(NSFetchRequest *)request {
-    NSLog(@"function: whereCluaseWithFetchRequest");
+    //NSLog(@"function: whereCluaseWithFetchRequest");
 
     NSDictionary *result = [self recursive_whereClauseWithFetchRequest:request predicate:[request predicate]];
     if (result) {
@@ -1299,7 +1294,7 @@ static bool unEnc = false;
 //        NSBetweenPredicateOperatorType
 //    };
 //    typedef NSUInteger NSPredicateOperatorType;
-    NSLog(@"function: recursive_whereClauseWithFetchRequest");
+    //NSLog(@"function: recursive_whereClauseWithFetchRequest");
 
     static NSDictionary *operators = nil;
     static dispatch_once_t token;
@@ -1406,7 +1401,7 @@ static bool unEnc = false;
  
  */
 - (void)bindWhereClause:(NSDictionary *)clause toStatement:(sqlite3_stmt *)statement {
-    NSLog(@"function: bindWhereClause");
+    //NSLog(@"function: bindWhereClause");
 
     if (statement == NULL) { return; }
     NSArray *bindings = [clause objectForKey:@"bindings"];
@@ -1469,7 +1464,7 @@ static bool unEnc = false;
                operator:(NSDictionary *)operator
                 operand:(id *)operand
                bindings:(id *)bindings {
-    NSLog(@"function: parseExpression");
+    //NSLog(@"function: parseExpression");
 
     NSExpressionType type = [expression expressionType];
     
@@ -1534,7 +1529,7 @@ static bool unEnc = false;
 }
 
 - (NSString *)foreignKeyColumnForRelationship:(NSRelationshipDescription *)relationship {
-    NSLog(@"function: foreignKeyColumnForRelationship");
+    //NSLog(@"function: foreignKeyColumnForRelationship");
 
     NSEntityDescription *destination = [relationship destinationEntity];
     return [NSString stringWithFormat:@"%@_id", [destination name]];
