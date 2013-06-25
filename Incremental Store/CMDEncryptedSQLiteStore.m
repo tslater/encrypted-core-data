@@ -9,6 +9,7 @@
 #error This class requires ARC.
 #endif
 
+
 #import <sqlite3.h>
 #import <SecureFoundation/SecureFoundation.h>
 #import "CMDEncryptedSQLiteStore.h"
@@ -20,6 +21,7 @@ NSString * const CMDEncryptedSQLiteStoreAccount = @"CMDEncryptedSQLiteStoreAccou
 NSString * const CMDEncryptedSQLiteStoreErrorDomain = @"CMDEncryptedSQLiteStoreErrorDomain";
 NSString * const CMDEncryptedSQLiteStoreErrorMessageKey = @"CMDEncryptedSQLiteStoreErrorMessage";
 static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
+static bool unEnc = false;
 
 #pragma mark - category interfaces
 
@@ -82,22 +84,52 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
     }
 }
 
+- (int)keySetup:(NSString*) passphrase {
+    NSData* passData = [passphrase dataUsingEncoding:NSUTF8StringEncoding];
+    NSData* passDataP = IMSHashData_MD5(passData);
+    NSString* passphraseP = [NSString stringWithFormat:@"%@", passDataP];
+    passphraseP = [passphraseP stringByReplacingOccurrencesOfString:@" " withString:@""];
+    passphraseP = [passphraseP stringByReplacingOccurrencesOfString:@"<" withString:@""];
+    passphraseP = [passphraseP stringByReplacingOccurrencesOfString:@">" withString:@""];
+    const char *string = [passphraseP UTF8String];
+
+    int ret = sqlite3_key(database, string, strlen(string));
+    string = NULL;
+    return ret;
+}
+
 - (BOOL)configureDatabasePassphrase {
     NSString *passphrase = [[self options] objectForKey:CMDEncryptedSQLiteStorePassphraseKey];
     NSString *service = [[self options] objectForKey:CMDEncryptedSQLiteStoreService];
     NSString *account = [[self options] objectForKey:CMDEncryptedSQLiteStoreAccount];
     if(service && account) {
         passphrase = [IMSKeychain securePasswordForService:service account:account];
+        NSLog(@"+UNENCRYPTED");
     }
     if (passphrase) {
         passphrase = [NSString stringWithFormat:@"%@%@%@",passphrase,[[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleDisplayName"],passphrase];
-        const char *string = [passphrase UTF8String];
-        int status = sqlite3_key(database, string, strlen(string));
-        string = NULL;
+        
+        int status = [self keySetup:passphrase];
+        unEnc = YES;
         passphrase = nil;
         return (status == SQLITE_OK);
     }
     
+    passphrase = nil;
+    return YES;
+}
+
+- (BOOL)clearDatabasePassphrase {
+    NSString *passphrase = [[NSUUID UUID] UUIDString];
+    if (passphrase) {
+        NSLog(@"-ENCRYPTED");
+        int status = [self keySetup:passphrase];
+        unEnc = NO;
+        
+        passphrase = nil;
+        return (status == SQLITE_OK);
+    }
+
     passphrase = nil;
     return YES;
 }
@@ -108,6 +140,7 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
                        configurationName:(NSString *)name
                                      URL:(NSURL *)URL
                                  options:(NSDictionary *)options {
+    NSLog(@"function: initWithPersistentStoreCoordinator");
     self = [super initWithPersistentStoreCoordinator:root configurationName:name URL:URL options:options];
     if (self) {
         objectIDCache = [NSMutableDictionary dictionary];
@@ -124,6 +157,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 }
 
 - (NSArray *)obtainPermanentIDsForObjects:(NSArray *)array error:(NSError **)error {
+    NSLog(@"function: obtainPermanentIDsForObjects");
+    [self configureDatabasePassphrase];
     NSMutableArray *__block objectIDs = [NSMutableArray arrayWithCapacity:[array count]];
     [array enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
         NSEntityDescription *entity = [(NSManagedObject *)obj entity];
@@ -133,17 +168,21 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
             if (error) { *error = [self databaseError]; }
             *stop = YES;
             objectIDs = nil;
+            [self clearDatabasePassphrase];   
             return;
         }
         NSManagedObjectID *objectID = [self newObjectIDForEntity:entity referenceObject:value];
         [objectIDs addObject:objectID];
     }];
+    [self clearDatabasePassphrase];
     return objectIDs;
 }
 
 - (id)executeRequest:(NSPersistentStoreRequest *)request
          withContext:(NSManagedObjectContext *)context
                error:(NSError **)error {
+    NSLog(@"function: executeRequest");
+    [self configureDatabasePassphrase];
     if ([request requestType] == NSFetchRequestType) {
         
         // prepare values
@@ -177,6 +216,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
             }
             if (statement == NULL || sqlite3_finalize(statement) != SQLITE_OK) {
                 if (error) { *error = [self databaseError]; }
+                [self clearDatabasePassphrase];
+
                 return nil;
             }
         }
@@ -196,24 +237,32 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
             }
             if (statement == NULL || sqlite3_finalize(statement) != SQLITE_OK) {
                 if (error) { *error = [self databaseError]; }
+                [self clearDatabasePassphrase];
+
                 return nil;
             }
         }
         
         // return
+        [self clearDatabasePassphrase];
+
         return results;
         
     }
     else if ([request requestType] == NSSaveRequestType) {
+        [self clearDatabasePassphrase];
+
         return [self handleSaveChangesRequest:(id)request error:error];
     }
+    [self clearDatabasePassphrase];
     return nil;
 }
 
 - (NSIncrementalStoreNode *)newValuesForObjectWithID:(NSManagedObjectID *)objectID
                                          withContext:(NSManagedObjectContext *)context
                                                error:(NSError **)error {
-    
+    NSLog(@"function: newValuesForObjectWithID");
+
     // cache hit
     {
         NSIncrementalStoreNode *node = [nodeCache objectForKey:objectID];
@@ -282,7 +331,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
               forObjectWithID:(NSManagedObjectID *)objectID
                   withContext:(NSManagedObjectContext *)context
                         error:(NSError **)error {
-    
+    NSLog(@"function: newValueForRelationship");
+
     // prepare values
     unsigned long long key = [[self referenceObjectForObjectID:objectID] unsignedLongLongValue];
     NSEntityDescription *sourceEntity = [objectID entity];
@@ -343,13 +393,18 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 }
 
 - (void)managedObjectContextDidRegisterObjectsWithIDs:(NSArray *)objectIDs {
+    NSLog(@"function: managedObjectContextDidRegisterObjectsWithIDs");
+    [self configureDatabasePassphrase];
     [objectIDs enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
         NSUInteger value = [[objectCountCache objectForKey:obj] unsignedIntegerValue];
         [objectCountCache setObject:@(value + 1) forKey:obj];
     }];
+    [self clearDatabasePassphrase];
 }
 
 - (void)managedObjectContextDidUnregisterObjectsWithIDs:(NSArray *)objectIDs {
+    NSLog(@"function: managedObjectContextDidUnregisterObjectsWithIDs");
+
     [objectIDs enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
         NSNumber *value = [objectCountCache objectForKey:obj];
         if (value) {
@@ -370,6 +425,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 #pragma mark - metadata helpers
 
 - (BOOL)loadMetadata:(NSError **)error {
+    NSLog(@"function: loadMetadata");
+
     if (sqlite3_open([[[self URL] path] UTF8String], &database) == SQLITE_OK) {
         
         // passphrase
@@ -379,13 +436,14 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
             database = NULL;
             return NO;
         }
+
         
         // load metadata
         BOOL success = [self performInTransaction:^{
             
             // ask if we have a metadata table
             BOOL hasTable = NO;
-            if (![self hasMetadataTable:&hasTable error:error]) { return NO; }
+            if (![self hasMetadataTable:&hasTable error:error]) {  /*[self clearDatabasePassphrase];*/ return NO; }
             
             // load existing metadata and optionally run migrations
             if (hasTable) {
@@ -406,6 +464,7 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
                 else {
                     if (error) { *error = [self databaseError]; }
                     sqlite3_finalize(statement);
+                //   [self clearDatabasePassphrase];
                     return NO;
                 }
                 sqlite3_finalize(statement);
@@ -425,6 +484,7 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
                         
                         // run migrations
                         if (![self migrateFromModel:oldModel toModel:newModel error:error]) {
+                          //  [self clearDatabasePassphrase];
                             return NO;
                         }
                         
@@ -434,6 +494,7 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
                         [self setMetadata:mutableMetadata];
                         if (![self saveMetadata]) {
                             if (error) { *error = [self databaseError]; }
+                         //   [self clearDatabasePassphrase];
                             return NO;
                         }
                         
@@ -453,6 +514,7 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
                 sqlite3_step(statement);
                 if (statement == NULL || sqlite3_finalize(statement) != SQLITE_OK) {
                     if (error) { *error = [self databaseError]; }
+            //        [self clearDatabasePassphrase];
                     return NO;
                 }
                 
@@ -460,6 +522,7 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
                 NSManagedObjectModel *model = [[self persistentStoreCoordinator] managedObjectModel];
                 if (![self initializeDatabaseWithModel:model]) {
                     if (error) { *error = [self databaseError]; }
+              //      [self clearDatabasePassphrase];
                     return NO;
                 }
                 
@@ -471,17 +534,19 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
                 [self setMetadata:metadata];
                 if (![self saveMetadata]) {
                     if (error) { *error = [self databaseError]; }
+            //        [self clearDatabasePassphrase];
                     return NO;
                 }
             }
             
             // worked
+          //  [self clearDatabasePassphrase];
             return YES;
             
         }];
         
         // finish up
-        if (success) { return success; }
+        if (success) {/*[self clearDatabasePassphrase]; */return success; }
         
     }
     
@@ -489,11 +554,14 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
     if (error) { *error = [self databaseError]; }
     sqlite3_close(database);
     database = NULL;
+  //  [self clearDatabasePassphrase];
     return NO;
     
 }
 
 - (BOOL)hasMetadataTable:(BOOL *)hasTable error:(NSError **)error {
+    NSLog(@"function: hasMetadataTable");
+
     int count = 0;
     NSString *string = [NSString stringWithFormat:
                         @"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='%@';",
@@ -513,16 +581,18 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 }
 
 - (BOOL)saveMetadata {
+    NSLog(@"function: saveMetadata");
+
     NSString *string;
     sqlite3_stmt *statement;
-    
+ //   [self configureDatabasePassphrase];
     // delete
     string = [NSString stringWithFormat:
               @"DELETE FROM %@;",
               CMDEncryptedSQLiteStoreMetadataTableName];
     statement = [self preparedStatementForQuery:string];
     sqlite3_step(statement);
-    if (statement == NULL || sqlite3_finalize(statement) != SQLITE_OK) { return NO; }
+    if (statement == NULL || sqlite3_finalize(statement) != SQLITE_OK) {        /* [self clearDatabasePassphrase];*/ return NO; }
     
     // save
     string = [NSString stringWithFormat:
@@ -532,8 +602,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
     NSData *data = [NSKeyedArchiver archivedDataWithRootObject:[self metadata]];
     sqlite3_bind_blob(statement, 1, [data bytes], [data length], SQLITE_TRANSIENT);
     sqlite3_step(statement);
-    if (statement == NULL || sqlite3_finalize(statement) != SQLITE_OK) { return NO; }
-    
+    if (statement == NULL || sqlite3_finalize(statement) != SQLITE_OK) { /*[self clearDatabasePassphrase]; */return NO; }
+  //  [self clearDatabasePassphrase];
     return YES;
 }
 
@@ -544,7 +614,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 
 - (BOOL)migrateFromModel:(NSManagedObjectModel *)fromModel toModel:(NSManagedObjectModel *)toModel error:(NSError **)error {
     BOOL __block succuess = YES;
-    
+    NSLog(@"function: migrateFromModel");
+
     // generate mapping model
     NSMappingModel *mappingModel = [NSMappingModel
                                     inferredMappingModelForSourceModel:fromModel
@@ -595,6 +666,9 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 }
 
 - (BOOL)initializeDatabaseWithModel:(NSManagedObjectModel *)model {
+    
+    NSLog(@"function: initializeDatabaseWithModel");
+
     BOOL __block success = YES;
     [[model entities] enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
         if (![self createTableForEntity:obj]) {
@@ -606,7 +680,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 }
 
 - (BOOL)createTableForEntity:(NSEntityDescription *)entity {
-    
+    NSLog(@"function: createTableForEntity");
+
     // prepare columns
     NSMutableArray *columns = [NSMutableArray arrayWithObject:@"id integer primary key"];
     NSArray *attributeNames = [[entity attributesByName] allKeys];
@@ -634,11 +709,15 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 }
 
 - (BOOL)dropTableForEntity:(NSEntityDescription *)entity {
+    NSLog(@"function: dropTableForEntity");
+
     NSString *name = [self tableNameForEntity:entity];
     return [self dropTableNamed:name];
 }
 
 - (BOOL)dropTableNamed:(NSString *)name {
+    NSLog(@"function: dropTableNamed");
+
     NSString *string = [NSString stringWithFormat:
                         @"DROP TABLE %@;",
                         name];
@@ -650,6 +729,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 - (BOOL)alterTableForSourceEntity:(NSEntityDescription *)sourceEntity
                 destinationEntity:(NSEntityDescription *)destinationEntity
                       withMapping:(NSEntityMapping *)mapping {
+    NSLog(@"function: alterTableForSourceEntity");
+
     NSString *string;
     sqlite3_stmt *statement;
     NSString *sourceEntityName = [sourceEntity name];
@@ -721,22 +802,30 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 #pragma mark - save changes to the database
 
 - (NSArray *)handleSaveChangesRequest:(NSSaveChangesRequest *)request error:(NSError **)error {
+    NSLog(@"function: handleSaveChangesRequest");
+
+ //   [self configureDatabasePassphrase];
     NSMutableDictionary *localNodeCache = [nodeCache mutableCopy];
     BOOL success = [self performInTransaction:^{
         BOOL insert = [self handleInsertedObjectsInSaveReuqest:request error:error];
         BOOL update = [self handleUpdatedObjectsInSaveReuqest:request cache:localNodeCache error:error];
         BOOL delete = [self handleDeletedObjectsInSaveReuqest:request error:error];
+      //  [self clearDatabasePassphrase];
         return (BOOL)(insert && update && delete);
     }];
     if (success) {
         nodeCache = localNodeCache;
+    //    [self clearDatabasePassphrase];
         return [NSArray array];
     }
     if (error) { *error = [self databaseError]; }
+  //  [self clearDatabasePassphrase];
     return nil;
 }
 
 - (BOOL)handleInsertedObjectsInSaveReuqest:(NSSaveChangesRequest *)request error:(NSError **)error {
+    NSLog(@"function: handleInsertedObjectsInSaveRequest");
+
     BOOL __block success = YES;
     [[request insertedObjects] enumerateObjectsUsingBlock:^(NSManagedObject *object, BOOL *stop) {
         
@@ -801,6 +890,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 }
 
 - (BOOL)handleUpdatedObjectsInSaveReuqest:(NSSaveChangesRequest *)request cache:(NSMutableDictionary *)cache error:(NSError **)error {
+    NSLog(@"function: handleUpdatedObjectsInSaveRequest");
+
     BOOL __block success = YES;
     [[request updatedObjects] enumerateObjectsUsingBlock:^(NSManagedObject *object, BOOL *stop) {
         
@@ -907,6 +998,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 
 - (BOOL)handleDeletedObjectsInSaveReuqest:(NSSaveChangesRequest *)request error:(NSError **)error {
     BOOL __block success = YES;
+    NSLog(@"function: handleDeletedObjectsInSaveReuqest");
+
     [[request deletedObjects] enumerateObjectsUsingBlock:^(NSManagedObject *object, BOOL *stop) {
         
         // get identifying information
@@ -949,12 +1042,16 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 }
 
 - (BOOL)performInTransaction:(BOOL (^) ())block {
+    [self configureDatabasePassphrase];
+    NSLog(@"function: performInTransaction");
+
     sqlite3_stmt *statement = NULL;
     
     // begin transaction
     statement = [self preparedStatementForQuery:@"BEGIN EXCLUSIVE;"];
     sqlite3_step(statement);
     if (sqlite3_finalize(statement) != SQLITE_OK) {
+       [self clearDatabasePassphrase];
         return NO;
     }
     
@@ -965,15 +1062,19 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
     statement = [self preparedStatementForQuery:(success ? @"COMMIT;" : @"ROLLBACK;")];
     sqlite3_step(statement);
     if (sqlite3_finalize(statement) != SQLITE_OK) {
+        [self clearDatabasePassphrase];
         return NO;
     }
     
     // return
+    [self clearDatabasePassphrase];
     return success;
     
 }
 
 - (NSString *)tableNameForEntity:(NSEntityDescription *)entity {
+    NSLog(@"function: tableNameForEntity");
+
     NSEntityDescription *targetEntity = entity;
     while ([targetEntity superentity] != nil) {
         targetEntity = [targetEntity superentity];
@@ -982,6 +1083,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 }
 
 - (sqlite3_stmt *)preparedStatementForQuery:(NSString *)query {
+    NSLog(@"function: preparedStatementForQuery");
+
     static BOOL debug = NO;
     static dispatch_once_t token;
     dispatch_once(&token, ^{
@@ -994,6 +1097,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 }
 
 - (NSString *)orderClauseWithSortDescriptors:(NSArray *)descriptors {
+    NSLog(@"function: orderClauseWithSortDescriptors");
+
     NSMutableArray *columns = [NSMutableArray arrayWithCapacity:[descriptors count]];
     [descriptors enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
         [columns addObject:[NSString stringWithFormat:
@@ -1008,6 +1113,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 }
 
 - (NSNumber *)maximumObjectIDInTable:(NSString *)table {
+    NSLog(@"function: maximumObjectIDInTable");
+
     NSNumber *value = [objectIDCache objectForKey:table];
     if (value == nil) {
         NSString *string = [NSString stringWithFormat:@"SELECT MAX(ID) FROM %@;", table];
@@ -1086,6 +1193,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 - (id)valueForProperty:(NSPropertyDescription *)property
            inStatement:(sqlite3_stmt *)statement
                atIndex:(int)index {
+    NSLog(@"function: valueForProperty");
+
     if (sqlite3_column_type(statement, index) == SQLITE_NULL) { return nil; }
     if ([property isKindOfClass:[NSAttributeDescription class]]) {
         NSAttributeType type = [(id)property attributeType];
@@ -1167,6 +1276,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
  
  */
 - (NSDictionary *)whereClauseWithFetchRequest:(NSFetchRequest *)request {
+    NSLog(@"function: whereCluaseWithFetchRequest");
+
     NSDictionary *result = [self recursive_whereClauseWithFetchRequest:request predicate:[request predicate]];
     if (result) {
         NSString *query = [result objectForKey:@"query"];
@@ -1188,7 +1299,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 //        NSBetweenPredicateOperatorType
 //    };
 //    typedef NSUInteger NSPredicateOperatorType;
-    
+    NSLog(@"function: recursive_whereClauseWithFetchRequest");
+
     static NSDictionary *operators = nil;
     static dispatch_once_t token;
     dispatch_once(&token, ^{
@@ -1294,6 +1406,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
  
  */
 - (void)bindWhereClause:(NSDictionary *)clause toStatement:(sqlite3_stmt *)statement {
+    NSLog(@"function: bindWhereClause");
+
     if (statement == NULL) { return; }
     NSArray *bindings = [clause objectForKey:@"bindings"];
     [bindings enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
@@ -1355,6 +1469,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
                operator:(NSDictionary *)operator
                 operand:(id *)operand
                bindings:(id *)bindings {
+    NSLog(@"function: parseExpression");
+
     NSExpressionType type = [expression expressionType];
     
     // reference a column in the query
@@ -1418,6 +1534,8 @@ static NSString * const CMDEncryptedSQLiteStoreMetadataTableName = @"meta";
 }
 
 - (NSString *)foreignKeyColumnForRelationship:(NSRelationshipDescription *)relationship {
+    NSLog(@"function: foreignKeyColumnForRelationship");
+
     NSEntityDescription *destination = [relationship destinationEntity];
     return [NSString stringWithFormat:@"%@_id", [destination name]];
 }
