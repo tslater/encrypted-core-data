@@ -101,8 +101,8 @@
     // insert posts and save
     for (NSUInteger i = 0; i < count; i++) {
         id object = [NSEntityDescription insertNewObjectForEntityForName:@"Post" inManagedObjectContext:context];
-        [object setValue:@"adventures" forKey:@"title"];
-        [object setValue:@"fundamental" forKey:@"body"];
+        [object setValue:@"test title" forKey:@"title"];
+        [object setValue:@"test body" forKey:@"body"];
         [object setValue:user forKey:@"user"];
     }
     error = nil;
@@ -686,8 +686,10 @@
     
     [self createPosts:count forUser:user];
     
-    [@[[NSPredicate predicateWithFormat:@"name = %@",@"Maggie"],
-       [NSPredicate predicateWithFormat:@"name == %@",@"Maggie"],
+    NSString *name = [NSString stringWithFormat:@"%@",@"Maggie"];
+    
+    [@[[NSPredicate predicateWithFormat:@"name = %@",name],
+       [NSPredicate predicateWithFormat:@"name == %@",name],
        [NSPredicate predicateWithFormat:@"age = %@",@(50)],
        [NSPredicate predicateWithFormat:@"age == %@",@(50)]]
      enumerateObjectsUsingBlock:^(NSPredicate *pred, NSUInteger idx, BOOL *stop) {
@@ -703,6 +705,24 @@
          
      }];
     
+}
+
+-(void)test_predicateWithoutRightBinding {
+    
+    // this partial test is stub for testing null or static rightOperands
+    
+    NSError *error;
+    NSManagedObject *user = [NSEntityDescription insertNewObjectForEntityForName:@"User" inManagedObjectContext:context];
+    [user setValue:@"Maggie" forKey:@"name"];
+    [user setValue:@(50) forKey:@"age"];
+    [user setValue:@(51) forKey:@"age2"];
+    [context save:&error];
+    
+    NSFetchRequest *req = [[NSFetchRequest alloc] initWithEntityName:@"User"];
+
+    [req setPredicate:[NSPredicate predicateWithFormat:@"age != Nil && (age2 == Nil || age == age2)"]];
+    [context executeFetchRequest:req error:&error];
+
 }
 
 @end

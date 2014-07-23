@@ -2130,20 +2130,21 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
                      bindings:&rightBindings];
         
         // build result and return
-        if (rightOperand && !rightBindings) {
-            if([[operator objectForKey:@"operator"] isEqualToString:@"!="]) {
-                query = [@[leftOperand, @"IS NOT", rightOperand] componentsJoinedByString:@" "];
+//        if ([rightOperand isKindOfClass:[NSString class]]){
+            if ([rightOperand isEqualToString:@"NULL"]) {
+                if([[operator objectForKey:@"operator"] isEqualToString:@"!="])
+                    query = [@[leftOperand, @"IS NOT", rightOperand] componentsJoinedByString:@" "];
+                else
+                    query = [@[leftOperand, @"IS", rightOperand] componentsJoinedByString:@" "];
             }
-            else if ([[operator objectForKey:@"operator"] isEqualToString:@"="]
-                  || [[operator objectForKey:@"operator"] isEqualToString:@"=="]){
-                query = [@[leftOperand, @"IS", rightOperand] componentsJoinedByString:@" "];
-            }
-            else
+            else {
                 query = [@[leftOperand, [operator objectForKey:@"operator"], rightOperand] componentsJoinedByString:@" "];
-        }
-        else {
-            query = [@[leftOperand, [operator objectForKey:@"operator"], rightOperand] componentsJoinedByString:@" "];
-        }
+            }
+//        }
+//        else {
+//            abort();
+//            query = [@[leftOperand, [operator objectForKey:@"operator"], rightOperand] componentsJoinedByString:@" "];
+//        }
         
         NSMutableArray *comparisonBindings = [NSMutableArray arrayWithCapacity:2];
         if (leftBindings)  [comparisonBindings addObject:leftBindings];
