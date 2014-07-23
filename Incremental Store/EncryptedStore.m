@@ -2048,7 +2048,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
     static dispatch_once_t token;
     dispatch_once(&token, ^{
         operators = @{
-                      @(NSEqualToPredicateOperatorType)              : @{ @"operator" : @"=",      @"format" : @"'%@'" },
+                      @(NSEqualToPredicateOperatorType)              : @{ @"operator" : @"=",      @"format" : @"%@" },
                       @(NSNotEqualToPredicateOperatorType)           : @{ @"operator" : @"!=",     @"format" : @"%@" },
                       @(NSContainsPredicateOperatorType)             : @{ @"operator" : @"LIKE",   @"format" : @"%%%@%%" },
                       @(NSBeginsWithPredicateOperatorType)           : @{ @"operator" : @"LIKE",   @"format" : @"%@%%" },
@@ -2133,9 +2133,13 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
         if (rightOperand && !rightBindings) {
             if([[operator objectForKey:@"operator"] isEqualToString:@"!="]) {
                 query = [@[leftOperand, @"IS NOT", rightOperand] componentsJoinedByString:@" "];
-            } else {
+            }
+            else if ([[operator objectForKey:@"operator"] isEqualToString:@"="]
+                  || [[operator objectForKey:@"operator"] isEqualToString:@"=="]){
                 query = [@[leftOperand, @"IS", rightOperand] componentsJoinedByString:@" "];
             }
+            else
+                query = [@[leftOperand, [operator objectForKey:@"operator"], rightOperand] componentsJoinedByString:@" "];
         }
         else {
             query = [@[leftOperand, [operator objectForKey:@"operator"], rightOperand] componentsJoinedByString:@" "];
@@ -2191,13 +2195,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
         
         // string
         if ([obj isKindOfClass:[NSString class]]) {
-            const char* str = [obj UTF8String];
-            int len = [obj length];
-            
-            if (str[0] == '\'' && str[len-1] == '\'')
-                sqlite3_bind_text(statement, (idx + 1), [obj UTF8String]+1, [(NSString*)obj length]-2, SQLITE_TRANSIENT);
-            else
-                sqlite3_bind_text(statement, (idx + 1), [obj UTF8String], [(NSString*)obj length], SQLITE_TRANSIENT);
+            sqlite3_bind_text(statement, (idx + 1), [obj UTF8String], -1, SQLITE_TRANSIENT);
         }
         
         // number
