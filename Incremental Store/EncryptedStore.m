@@ -85,27 +85,15 @@ static NSString * const EncryptedStoreMetadataTableName = @"meta";
     
     //  NSString* appSupportDir = [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES) objectAtIndex:0];
     
-    BOOL backup = YES;
     NSURL *databaseURL;
-    id dburl = [options objectForKey:EncryptedStoreDatabaseLocation];
-    if(dburl != nil) {
-        if ([dburl isKindOfClass:[NSString class]]){
-            databaseURL = [NSURL URLWithString:[options objectForKey:EncryptedStoreDatabaseLocation]];
-            backup = NO;
-        }
-        else if ([dburl isKindOfClass:[NSURL class]]){
-            databaseURL = dburl;
-            backup = NO;
-        }
-    }
-    
-    if (backup){
+    if([options objectForKey:EncryptedStoreDatabaseLocation] != nil) {
+        databaseURL = [[NSURL alloc] initFileURLWithPath:[options objectForKey:EncryptedStoreDatabaseLocation]];
+    } else {
         NSString *dbName = NSBundle.mainBundle.infoDictionary [@"CFBundleDisplayName"];
         NSFileManager *fileManager = [NSFileManager defaultManager];
         NSURL *applicationSupportURL = [[fileManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask] lastObject];
         [fileManager createDirectoryAtURL:applicationSupportURL withIntermediateDirectories:NO attributes:nil error:nil];
         databaseURL = [applicationSupportURL URLByAppendingPathComponent:[dbName stringByAppendingString:@".sqlite"]];
-
     }
     
     NSError *error = nil;
@@ -119,21 +107,7 @@ static NSString * const EncryptedStoreMetadataTableName = @"meta";
     return persistentCoordinator;
 }
 
-+ (NSPersistentStoreCoordinator *)makeStoreWithStructOptions:(EncryptedStoreOptions *) options managedObjectModel:(NSManagedObjectModel *)objModel {
-    
-    NSMutableDictionary *newOptions = [NSMutableDictionary dictionary];
-    [newOptions setValue:[NSString stringWithUTF8String:options->passphrase] forKey:EncryptedStorePassphraseKey];
-    
-    if (options->database_location)
-        [newOptions setValue:[NSString stringWithUTF8String:options->database_location] forKey:EncryptedStoreDatabaseLocation];
-    
-    if (options->cache_size)
-        [newOptions setValue:[NSNumber numberWithInt:*(options->cache_size)] forKey:EncryptedStoreCacheSize];
-    
-    return [self makeStoreWithOptions:newOptions managedObjectModel:objModel];
-}
-
-+ (NSPersistentStoreCoordinator *)makeStore:(NSManagedObjectModel *)objModel passcode:(NSString *)passcode
++ (NSPersistentStoreCoordinator *)makeStore:(NSManagedObjectModel *)objModel :(NSString *)passcode
 {
     NSDictionary *options = @{ EncryptedStorePassphraseKey : passcode };
     
@@ -209,10 +183,10 @@ static NSString * const EncryptedStoreMetadataTableName = @"meta";
         NSEntityDescription *entity = [fetchRequest entity];
         NSFetchRequestResultType type = [fetchRequest resultType];
         NSMutableArray *results = [NSMutableArray array];
-        NSString * joinStatement = [self getJoinClause:fetchRequest withPredicate:[fetchRequest predicate] initial:YES];
+        NSString * joinStatement = [self getJoinClause:fetchRequest];
         
         NSString *table = [self tableNameForEntity:entity];
-        NSDictionary *condition = [self whereClauseWithFetchRequest:fetchRequest];
+        NSDictionary *condition = [self whereClauseWithFetchRequest:fetchRequest andContext: context];
         NSDictionary *ordering = [self orderClause:fetchRequest forEntity:entity];
         NSString *limit = ([fetchRequest fetchLimit] > 0 ? [NSString stringWithFormat:@" LIMIT %ld", (unsigned long)[fetchRequest fetchLimit]] : @"");
         BOOL isDistinctFetchEnabled = [fetchRequest returnsDistinctResults];
@@ -286,19 +260,25 @@ static NSString * const EncryptedStoreMetadataTableName = @"meta";
         if (type == NSDictionaryResultType && [[fetchRequest propertiesToFetch] count] > 0) {
             BOOL isDistinctFetchEnabled = [fetchRequest returnsDistinctResults];
             NSArray * propertiesToFetch = [fetchRequest propertiesToFetch];
-            NSString * propertiesToFetchString = [self columnsClauseWithProperties:propertiesToFetch];
-            
+            NSString * propertiesToFetchString = [self columnsClauseWithProperties:propertiesToFetch andTableName:table];
+            NSArray * propertiesToGroupBy = [fetchRequest propertiesToGroupBy];
+            NSString * propertiesToGroupByString;
+            if(propertiesToGroupBy.count)
+                propertiesToGroupByString = [NSString stringWithFormat: @" GROUP BY %@ ",[self columnsClauseWithProperties: propertiesToGroupBy andTableName:table]];
+            else
+                propertiesToGroupByString = @"";
             // TODO: Need a test case to reach here, or remove it entirely
             // NOTE - this now supports joins but in a limited fashion. It will successfully
             // retrieve properties that are to-one relationships
             
             NSString *string = [NSString stringWithFormat:
-                                @"SELECT %@%@ FROM %@ %@%@%@%@;",
-                                (isDistinctFetchEnabled)?@"DISTINCT ":@"",
+                                @"SELECT %@%@ FROM %@ %@%@%@%@%@;",
+                                (isDistinctFetchEnabled) ? @"DISTINCT ":@"",
                                 propertiesToFetchString,
                                 table,
                                 joinStatement,
                                 [condition objectForKey:@"query"],
+                                propertiesToGroupByString,
                                 [ordering objectForKey:@"order"],
                                 limit];
             sqlite3_stmt *statement = [self preparedStatementForQuery:string];
@@ -306,10 +286,12 @@ static NSString * const EncryptedStoreMetadataTableName = @"meta";
             while (sqlite3_step(statement) == SQLITE_ROW) {
                 NSMutableDictionary* singleResult = [NSMutableDictionary dictionary];
                 [propertiesToFetch enumerateObjectsUsingBlock:^(id property, NSUInteger idx, BOOL *stop) {
-                    id value = [self valueForProperty:property inStatement:statement atIndex:idx];
+                    id value = [self valueForProperty:property inStatement:statement atIndex:idx forEntity: fetchRequest.entity];
                     if (value)
                     {
                         [singleResult setValue:value forKey:[property name]];
+                    }else{
+                        NSLog(@"error can't find value");
                     }
                 }];
                 [results addObject:singleResult];
@@ -370,7 +352,8 @@ static NSString * const EncryptedStoreMetadataTableName = @"meta";
     NSDictionary *properties = [entity propertiesByName];
     [properties enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
         if ([obj isKindOfClass:[NSAttributeDescription class]]) {
-            [columns addObject:key];
+            NSString *quotedKey = [NSString stringWithFormat:@"`%@`", key];
+            [columns addObject:quotedKey];
             [keys addObject:key];
         }
         else if ([obj isKindOfClass:[NSRelationshipDescription class]]) {
@@ -379,7 +362,8 @@ static NSString * const EncryptedStoreMetadataTableName = @"meta";
             // Handle one-to-many and one-to-one
             if (![obj isToMany]) {
                 NSString *column = [self foreignKeyColumnForRelationship:obj];
-                [columns addObject:column];
+                NSString *quotedColumn = [NSString stringWithFormat:@"`%@`", column];
+                [columns addObject:quotedColumn];
                 [keys addObject:key];
             }
             
@@ -398,9 +382,10 @@ static NSString * const EncryptedStoreMetadataTableName = @"meta";
     if (sqlite3_step(statement) == SQLITE_ROW) {
         NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
         NSMutableArray * allProperties = [NSMutableArray new];
+        NSEntityDescription *entityDescription = objectID.entity;
         [keys enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
             NSPropertyDescription *property = [properties objectForKey:obj];
-            id value = [self valueForProperty:property inStatement:statement atIndex:idx];
+            id value = [self valueForProperty:property inStatement:statement atIndex:idx forEntity:entityDescription];
             if (value) {
                 [dictionary setObject:value forKey:obj];
                 [allProperties addObject:property];
@@ -529,7 +514,8 @@ static NSString * const EncryptedStoreMetadataTableName = @"meta";
 #pragma mark - metadata helpers
 
 - (BOOL)loadMetadata:(NSError **)error {
-    if (sqlite3_open([[[self URL] path] UTF8String], &database) == SQLITE_OK) {
+    //    if (  sqlite3_open_v2(  [[[self URL] path] UTF8String], &database, SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX , NULL) == SQLITE_OK) {
+    if (  sqlite3_open(  [[[self URL] path] UTF8String], &database) == SQLITE_OK) {
         
         // passphrase
         if (![self configureDatabasePassphrase]) {
@@ -1514,8 +1500,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
     dispatch_once(&token, ^{
         debug = [[NSUserDefaults standardUserDefaults] boolForKey:@"com.apple.CoreData.SQLDebug"];
     });
-    if (debug)
-    {NSLog(@"SQL DEBUG: %@", query); }
+    if (debug) {NSLog(@"SQL DEBUG: %@", query); }
     sqlite3_stmt *statement = NULL;
     if (sqlite3_prepare_v2(database, [query UTF8String], -1, &statement, NULL) == SQLITE_OK) { return statement; }
     if(debug) {NSLog(@"could not prepare statement: %s\n", sqlite3_errmsg(database));}
@@ -1536,7 +1521,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
         NSString *key = [desc key];
         if ([desc.key rangeOfString:@"."].location != NSNotFound) {
             NSArray *components = [desc.key componentsSeparatedByString:@"."];
-            tableName = [self joinedTableNameForComponents:[components subarrayWithRange:NSMakeRange(0, components.count -1)] forRelationship:NO];
+            tableName = [self joinedTableNameForComponents:components forRelationship:NO];
             key = [components lastObject];
         }
         
@@ -1560,7 +1545,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
     return @{ @"order": order };
 }
 
-- (NSString *) getJoinClause: (NSFetchRequest *) fetchRequest withPredicate:(NSPredicate*)predicate initial:(BOOL)initial{
+- (NSString *) getJoinClause: (NSFetchRequest *) fetchRequest {
     
     NSEntityDescription *entity = [fetchRequest entity];
     // We use a set to only add one join table per relationship.
@@ -1568,69 +1553,43 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
     // We use an array to ensure the order of join statements
     NSMutableArray *joinStatementsArray = [NSMutableArray array];
     
-    if (initial) {
-        // First look at all sort descriptor keys
-        NSArray *descs = [fetchRequest sortDescriptors];
-        for (NSSortDescriptor *sd in descs) {
-            NSString *sortKey = [sd key];
-            if ([sortKey rangeOfString:@"."].location != NSNotFound) {
-                if ([self maybeAddJoinStatementsForKey:sortKey toStatementArray:joinStatementsArray withExistingStatementSet:joinStatementsSet rootEntity:entity]) {
-                    [fetchRequest setReturnsDistinctResults:YES];
-                }
+    // First look at all sort descriptor keys
+    NSArray *descs = [fetchRequest sortDescriptors];
+    for (NSSortDescriptor *sd in descs) {
+        NSString *sortKey = [sd key];
+        if ([sortKey rangeOfString:@"."].location != NSNotFound) {
+            if ([self maybeAddJoinStatementsForKey:sortKey toStatementArray:joinStatementsArray withExistingStatementSet:joinStatementsSet rootEntity:entity andJoinType:@"LEFT OUTER JOIN"]) {
+                [fetchRequest setReturnsDistinctResults:YES];
             }
         }
     }
     
-    if ([predicate isKindOfClass:[NSCompoundPredicate class]]) {
-        NSCompoundPredicate * compoundPred = (NSCompoundPredicate*) predicate;
-        for (id subpred in [compoundPred subpredicates]){
-            [joinStatementsArray addObject:[self getJoinClause:fetchRequest withPredicate:subpred initial:NO]];
-        }
-    }
-    else if ([predicate isKindOfClass:[NSComparisonPredicate class]]){
-        NSComparisonPredicate *comparisonPred = (NSComparisonPredicate*) predicate;
-        NSString *predicateString = [predicate predicateFormat];
-        if (predicateString != nil ) {
-            NSRegularExpression* regex = [NSRegularExpression regularExpressionWithPattern:@"\\b([a-zA-Z]\\w*\\.[^= ]+)\\b" options:0 error:nil];
-            NSArray* matches = [regex matchesInString:predicateString options:0 range:NSMakeRange(0, [predicateString length])];
-            for ( NSTextCheckingResult* match in matches )
-            {
-                NSString* matchText = [predicateString substringWithRange:[match range]];
-                if ([matchText hasSuffix:@".@count"]) {
-                    // @count queries should be handled by sub-expressions rather than joins
-                    continue;
-                }
-                if ([self maybeAddJoinStatementsForKey:matchText toStatementArray:joinStatementsArray withExistingStatementSet:joinStatementsSet rootEntity:entity]) {
-                    [fetchRequest setReturnsDistinctResults:YES];
-                }
-            }
-        }
-        NSExpression *leftExp = [comparisonPred leftExpression];
-        if ([leftExp expressionType] == NSKeyPathExpressionType) {
-            id property = [[[fetchRequest entity] propertiesByName] objectForKey:[leftExp keyPath]];
-            if([property isKindOfClass:[NSRelationshipDescription class]]){
-                NSRelationshipDescription *desc = (NSRelationshipDescription*)property;
-                if ([desc isToMany] && [[desc inverseRelationship] isToMany]) {
-                    if ([self maybeAddJoinStatementsForKey:[leftExp keyPath] toStatementArray:joinStatementsArray withExistingStatementSet:joinStatementsSet rootEntity:entity]) {
-                        [fetchRequest setReturnsDistinctResults:YES];
-                    }
-                }
-            }
-        }
-        NSExpression *rightExp = [comparisonPred rightExpression];
-        if ([rightExp expressionType] == NSKeyPathExpressionType){
-            id property = [[[fetchRequest entity] propertiesByName] objectForKey:[rightExp keyPath]];
-            if([property isKindOfClass:[NSRelationshipDescription class]]){
-                NSRelationshipDescription *desc = (NSRelationshipDescription*)property;
-                if ([desc isToMany] && [[desc inverseRelationship] isToMany]) {
-                    if ([self maybeAddJoinStatementsForKey:[rightExp keyPath] toStatementArray:joinStatementsArray withExistingStatementSet:joinStatementsSet rootEntity:entity]) {
-                        [fetchRequest setReturnsDistinctResults:YES];
-                    }
-                }
-            }
-        }
-    }
+    NSString *predicateString = [[fetchRequest predicate] predicateFormat];
     
+    if (predicateString != nil ) {
+        
+        NSRegularExpression* regexForDottedRelations = [NSRegularExpression regularExpressionWithPattern:@"\\b([a-zA-Z]\\w*\\.[^= ]+)\\b" options:0 error:nil];
+        NSArray* dottedRelationMatches = [regexForDottedRelations matchesInString:predicateString options:0 range:NSMakeRange(0, [predicateString length])];
+
+        
+        NSRegularExpression* regexForAnyAllRelations = [NSRegularExpression regularExpressionWithPattern:@"(?<=\\b(ANY|ALL)(\\s))(\\S+)" options:0 error:nil];
+        NSArray* anyAllRelationsMatches = [regexForAnyAllRelations matchesInString:predicateString options:0 range:NSMakeRange(0, [predicateString length])];
+
+        NSMutableArray *matches = [NSMutableArray arrayWithArray:anyAllRelationsMatches];
+        [matches addObjectsFromArray:dottedRelationMatches];
+        
+        for ( NSTextCheckingResult* match in matches )
+        {
+            NSString* matchText = [predicateString substringWithRange:[match range]];
+            if ([matchText hasSuffix:@".@count"]) {
+                // @count queries should be handled by sub-expressions rather than joins
+                continue;
+            }
+            if ([self maybeAddJoinStatementsForKey:matchText toStatementArray:joinStatementsArray withExistingStatementSet:joinStatementsSet rootEntity:entity andJoinType:@"LEFT OUTER JOIN"]) {
+                [fetchRequest setReturnsDistinctResults:YES];
+            }
+        }
+    }
     if (joinStatementsArray.count > 0) {
         return [joinStatementsArray componentsJoinedByString:@" "];
     }
@@ -1641,8 +1600,10 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
 - (BOOL) maybeAddJoinStatementsForKey: (NSString *) key
                      toStatementArray: (NSMutableArray *) statementArray
              withExistingStatementSet: (NSMutableSet *) statementsSet
-                           rootEntity: (NSEntityDescription *) rootEntity {
-    
+                           rootEntity: (NSEntityDescription *) rootEntity
+                          andJoinType: (NSString *)joinType
+{
+    joinType = joinType ?: @"LEFT OUTER JOIN";
     BOOL retval = NO;
     
     // We support have deeper relationships (e.g. child.parent.name ) by bracketing the
@@ -1658,17 +1619,22 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
     // We terminate when there is one item left since that is the field of interest
     NSEntityDescription *currentEntity = rootEntity;
     NSString *fullJoinClause;
+    NSString *secondFullJoinClause = @"";
     NSString *lastTableName = [self tableNameForEntity:currentEntity];
-    for (int i = 0 ; i < keysArray.count; i++) {
+    int loopMax = (int) (keysArray.count == 1 ? 1 : keysArray.count - 1);
+    for (int i = 0 ; i < loopMax; i++) {
+        
+        NSArray *miniKeyArray =   ( keysArray.count > 1) ? [keysArray subarrayWithRange: NSMakeRange(0, i+2)] : @[keysArray[0], @"foobbbbears"] ;
         
         // alt names for tables for safety
         NSString *relTableName = [self joinedTableNameForComponents:
-                                  [keysArray subarrayWithRange: NSMakeRange(0, i+1)]
-                                                    forRelationship:YES];
+                                  miniKeyArray
+                                forRelationship:YES];
         
         NSString *nextTableName = [self joinedTableNameForComponents:
-                                   [keysArray subarrayWithRange: NSMakeRange(0, i+1)]
-                                                     forRelationship:NO];
+                                   miniKeyArray
+                                 forRelationship:NO];
+        
         
         NSRelationshipDescription *rel = [[currentEntity relationshipsByName]
                                           objectForKey:[keysArray objectAtIndex:i]];
@@ -1700,7 +1666,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
                                                relTableName,
                                                [columns objectAtIndex:index]];
                 
-                NSString *firstJoinClause = [NSString stringWithFormat:@"LEFT OUTER JOIN %@ ON %@", joinTableAsClause1, joinTableOnClause1];
+                NSString *firstJoinClause = [NSString stringWithFormat:@"%@ %@ ON %@", joinType, joinTableAsClause1, joinTableOnClause1];
                 
                 // relation table to destination entity table join
                 if (index == 1) { index = 0; }
@@ -1715,7 +1681,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
                                                 [columns objectAtIndex:index],
                                                 nextTableName];
                 
-                NSString *secondJoinClause = [NSString stringWithFormat:@"LEFT OUTER JOIN %@ ON %@", joinTableAsClause2, joinTableOnClause2];
+                NSString *secondJoinClause = [NSString stringWithFormat:@"%@  %@ ON %@", joinType, joinTableAsClause2, joinTableOnClause2];
                 
                 fullJoinClause = [NSString stringWithFormat:@"%@ %@",firstJoinClause,secondJoinClause];
             }
@@ -1737,6 +1703,39 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
                                          [self foreignKeyColumnForRelationship:rel],
                                          nextTableName];
                 }
+                
+                
+                if(i+1 < keysArray.count){
+                    NSString *nextProp = keysArray[i+1];
+                    NSDictionary *destinationArray = rel.destinationEntity.relationshipsByName;
+                    NSRelationshipDescription *secondRelation = [destinationArray objectForKey:nextProp];
+                    if(secondRelation){
+                        NSString *lastTableName2 = nextTableName;
+                        NSString *nextTableName2 = [self joinedTableNameForComponents: @[nextProp, @"foooobear"] forRelationship:YES];
+                        
+                        NSString *joinTableAsClause2;
+                        NSString *joinTableOnClause2;
+                        if(secondRelation.isToMany){
+                            joinTableAsClause2 = [NSString stringWithFormat:@"%@ AS %@",
+                                                  [self tableNameForRelationship: secondRelation],
+                                                  nextTableName2];
+                            joinTableOnClause2 = [NSString stringWithFormat:@"%@.__objectID = %@.%@",
+                                                  lastTableName2,
+                                                  nextTableName2,
+                                                  [self foreignKeyColumnForToManyRelationship:secondRelation.inverseRelationship]];
+                        } else {
+                            joinTableAsClause2 = [NSString stringWithFormat:@"%@ AS %@",
+                                                  [self tableNameForEntity:secondRelation.destinationEntity],
+                                                  nextTableName2];
+                            
+                            joinTableOnClause2 = [NSString stringWithFormat:@"%@.%@ = %@.__objectID",
+                                                  lastTableName2,
+                                                  [self foreignKeyColumnForRelationship:secondRelation],
+                                                  nextTableName2];
+                        }
+                        secondFullJoinClause = [NSString stringWithFormat: @" %@ %@ ON %@", joinType, joinTableAsClause2, joinTableOnClause2];
+                    }
+                }
                 // NOTE: we use an outer join instead of an inner one because the where clause might also
                 // be explicitely looking for cases where the relationship is null or has a specific value
                 // consider the following predicate: "entity.rel = null || entity.rel.field = 'something'".
@@ -1745,7 +1744,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
                 // Also, note that NSSQLiteStoreType correctly generates an outer join for this case but regular
                 // joins for others. That's obviously better for performance but for now, correctness should
                 // take precedence over performance. This should obviously be revisited at some point.
-                fullJoinClause = [NSString stringWithFormat:@"LEFT OUTER JOIN %@ ON %@", joinTableAsClause, joinTableOnClause];
+                fullJoinClause = [NSString stringWithFormat:@"%@ %@ ON %@", joinType, joinTableAsClause, joinTableOnClause];
             }
             
             currentEntity = rel.destinationEntity;
@@ -1754,6 +1753,12 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
                 [statementsSet addObject:fullJoinClause];
                 [statementArray addObject:fullJoinClause];
             }
+            if (secondFullJoinClause.length > 0 && ![statementsSet containsObject:secondFullJoinClause]) {
+                [statementsSet addObject:secondFullJoinClause];
+                [statementArray addObject:secondFullJoinClause];
+            }
+            
+
         }
     }
     
@@ -1761,11 +1766,46 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
 }
 
 
-- (NSString *)expressionDescriptionTypeString:(NSExpressionDescription *)expressionDescription {
+-(NSString*) sqlFunctionForCoredataExpressionDescription: (NSString*) keyPath andTableName: (NSString*) tableName{
+    NSDictionary *convertibleSetOperations = @{
+                                               @"@avg." : @"avg",
+                                                @"@max." : @"max",
+                                                @"@min." : @"min",
+                                                @"@sum." : @"sum",
+                                               @"@count." : @"count",
+                                               @"@distinctUnionOfObjects" : @"distinct",
+                                               @".@avg" : @"avg",
+                                               @".@max" : @"max",
+                                               @".@min" : @"min",
+                                               @".@sum" : @"sum",
+                                               @".@count" : @"count",
+                                               @"avg:" : @"avg",
+                                               @"max:" : @"max",
+                                               @"min:" : @"min",
+                                               @"sum:" : @"sum",
+                                               @"count:" : @"count",
+
+                   };
+    
+    for (NSString *setOpt in [convertibleSetOperations allKeys])
+    {
+        if ([keyPath hasSuffix:setOpt] || [keyPath hasPrefix:setOpt] )
+        {
+            NSString *clean = [[keyPath stringByReplacingOccurrencesOfString: setOpt withString:@""] stringByReplacingOccurrencesOfString:@".." withString:@"."];
+            return [NSString stringWithFormat:@"%@(%@.%@)",convertibleSetOperations[setOpt], tableName, clean];
+        };
+    };
+    
+    return nil;
+}
+
+- (NSString *)expressionDescriptionTypeString:(NSExpressionDescription *)expressionDescription andTableName: (NSString*) tableName {
+    
+
     
     switch (expressionDescription.expressionResultType) {
         case NSObjectIDAttributeType:
-            return @"__objectID";
+            return [NSString stringWithFormat: @"%@.__objectID", tableName];
             break;
         
             /*  NSUndefinedAttributeType
@@ -1781,14 +1821,30 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
              *  NSBinaryDataAttributeType
              *  NSTransformableAttributeType
              */
-            
+        
         default:
-            return @"";
+           return [self sqlFunctionForCoredataExpressionDescription: expressionDescription.expression.description andTableName: tableName];
+//            if(!returnString){
+//                    id operand = nil;
+//                    id bindings = nil;
+//                    [self parseExpression:expressionDescription.expression
+//                              inPredicate: nil
+//                           inFetchRequest: nil
+//                                  context: nil
+//                                 operator: nil
+//                                  operand: &operand
+//                                 bindings: &bindings
+//                     ];
+//                    NSLog(@"ok: %@", operand);
+//                    NSLog(@"nok %@", bindings);
+//                returnString = operand;
+//            }
+//            return returnString;
             break;
     }
 }
 
-- (NSString *)columnsClauseWithProperties:(NSArray *)properties {
+- (NSString *)columnsClauseWithProperties:(NSArray *)properties andTableName: (NSString *) tableName {
     NSMutableArray *columns = [NSMutableArray arrayWithCapacity:[properties count]];
     
     [properties enumerateObjectsUsingBlock:^(NSPropertyDescription *prop, NSUInteger idx, BOOL *stop) {
@@ -1797,7 +1853,12 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
                 [columns addObject:[self foreignKeyColumnForRelationship:(NSRelationshipDescription *)prop]];
             }
         } else if ([prop isKindOfClass:[NSExpressionDescription class]]) {
-            [columns addObject:[self expressionDescriptionTypeString:(NSExpressionDescription *)prop]];
+            NSExpressionDescription *expression = ((NSExpressionDescription *)prop);
+            id column = [self expressionDescriptionTypeString: ((NSExpressionDescription *)prop) andTableName: tableName];
+            if(!column){
+                
+            }
+            [columns addObject: column];
         } else {
             [columns addObject:[NSString stringWithFormat:@"%@",prop.name]];
         }
@@ -1829,7 +1890,6 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
               forKey:(NSString *)key
          toStatement:(sqlite3_stmt *)statement
              atIndex:(int)index {
-    
     if (value && ![value isKindOfClass:[NSNull class]]) {
         if ([property isKindOfClass:[NSAttributeDescription class]]) {
             NSAttributeType type = [(id)property attributeType];
@@ -1900,7 +1960,9 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
 
 - (id)valueForProperty:(NSPropertyDescription *)property
            inStatement:(sqlite3_stmt *)statement
-               atIndex:(int)index {
+               atIndex:(int)index
+             forEntity:(NSEntityDescription*)entity
+    {
     
     if (sqlite3_column_type(statement, index) == SQLITE_NULL) { return nil; }
     
@@ -1976,18 +2038,26 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
     
     else if ([property isKindOfClass:[NSExpressionDescription class]]) {
         NSNumber *number = @(sqlite3_column_int64(statement, index));
-        return [self expressionDescriptionTypeValue:(NSExpressionDescription *)property withReferenceNumber:number];
+        return [self expressionDescriptionTypeValue:(NSExpressionDescription *)property withReferenceNumber:number andEntity:entity];
     }
     
     return nil;
 }
 
 -(id)expressionDescriptionTypeValue:(NSExpressionDescription *)expressionDescription
-                withReferenceNumber:(NSNumber *)number {
+                withReferenceNumber:(NSNumber *)number
+{
+    return [self expressionDescriptionTypeValue:expressionDescription withReferenceNumber:number andEntity:expressionDescription.entity];
+}
+
+-(id)expressionDescriptionTypeValue:(NSExpressionDescription *)expressionDescription
+                withReferenceNumber:(NSNumber *)number
+                          andEntity:(NSEntityDescription *)entity
+    {
     
     switch ([expressionDescription expressionResultType]) {
         case NSObjectIDAttributeType:
-            return [self newObjectIDForEntity:[expressionDescription entity] referenceObject:number];
+            return [self newObjectIDForEntity:entity referenceObject:number];
             break;
             
             /*  NSUndefinedAttributeType
@@ -2005,7 +2075,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
              */
             
         default:
-            return nil;
+            return number;
             break;
     }
 }
@@ -2025,8 +2095,8 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
  }
  
  */
-- (NSDictionary *)whereClauseWithFetchRequest:(NSFetchRequest *)request {
-    NSDictionary *result = [self recursiveWhereClauseWithFetchRequest:request predicate:[request predicate]];
+- (NSDictionary *)whereClauseWithFetchRequest:(NSFetchRequest *)request andContext: (NSManagedObjectContext*) context {
+    NSDictionary *result = [self recursiveWhereClauseWithFetchRequest:request predicate:[request predicate] andContext:context];
     if ([(NSString*)result[@"query"] length] > 0) {
         NSMutableDictionary *mutableResult = [result mutableCopy];
         mutableResult[@"query"] = [NSString stringWithFormat:@" WHERE %@", result[@"query"]];
@@ -2036,7 +2106,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
     return result;
 }
 
-- (NSDictionary *)recursiveWhereClauseWithFetchRequest:(NSFetchRequest *)request predicate:(NSPredicate *)predicate {
+- (NSDictionary *)recursiveWhereClauseWithFetchRequest:(NSFetchRequest *)request predicate:(NSPredicate *)predicate andContext: (NSManagedObjectContext*) context {
     
     //    enum {
     //        NSCustomSelectorPredicateOperatorType,
@@ -2072,7 +2142,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
         // get subpredicates
         NSMutableArray *queries = [NSMutableArray array];
         [compoundPredicate.subpredicates enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
-            NSDictionary *result = [self recursiveWhereClauseWithFetchRequest:request predicate:obj];
+            NSDictionary *result = [self recursiveWhereClauseWithFetchRequest:request predicate:obj andContext:context];
             [queries addObject:[result objectForKey:@"query"]];
             [bindings addObjectsFromArray:[result objectForKey:@"bindings"]];
         }];
@@ -2115,6 +2185,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
         [self parseExpression:comparisonPredicate.leftExpression
                   inPredicate:comparisonPredicate
                inFetchRequest:request
+                      context:context
                      operator:operator
                       operand:&leftOperand
                      bindings:&leftBindings];
@@ -2125,6 +2196,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
         [self parseExpression:comparisonPredicate.rightExpression
                   inPredicate:comparisonPredicate
                inFetchRequest:request
+                      context:context
                      operator:operator
                       operand:&rightOperand
                      bindings:&rightBindings];
@@ -2133,9 +2205,20 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
         if (rightOperand && !rightBindings) {
             if([[operator objectForKey:@"operator"] isEqualToString:@"!="]) {
                 query = [@[leftOperand, @"IS NOT", rightOperand] componentsJoinedByString:@" "];
+            }else if([[operator objectForKey:@"operator"] isEqualToString:@">="] || [[operator objectForKey:@"operator"] isEqualToString:@"<="]){
+                query = [@[leftOperand, [operator objectForKey:@"operator"], rightOperand] componentsJoinedByString:@" "];
             } else {
-                query = [@[leftOperand, @"IS", rightOperand] componentsJoinedByString:@" "];
+                query = [@[leftOperand,  @"IS", rightOperand] componentsJoinedByString:@" "];
             }
+        }
+        else
+            if([rightBindings class] != [NSManagedObject class]
+                && ![rightBindings isKindOfClass: [NSData class]]
+                && [[operator objectForKey:@"operator"] isEqualToString:@"="]) {
+            query = [@[leftOperand, [operator objectForKey:@"operator"], rightBindings] componentsJoinedByString:@" "];
+            // If we're including the right bindings directly in the query string, it should not be included
+            // in the returned bindings. Otherwise, the indices passed to sqlite will be off and it *will* break stuff
+            rightBindings = nil;
         }
         else {
             query = [@[leftOperand, [operator objectForKey:@"operator"], rightOperand] componentsJoinedByString:@" "];
@@ -2173,6 +2256,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
             query = entityWhere;
         }
     }
+    
     return @{ @"query": query,
               @"bindings": bindings };
 }
@@ -2186,18 +2270,11 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
 - (void)bindWhereClause:(NSDictionary *)clause toStatement:(sqlite3_stmt *)statement {
     if (statement == NULL) { return; }
     NSArray *bindings = [clause objectForKey:@"bindings"];
-    
     [bindings enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
         
         // string
         if ([obj isKindOfClass:[NSString class]]) {
-            const char* str = [obj UTF8String];
-            int len = [obj length];
-            
-            if (str[0] == '\'' && str[len-1] == '\'')
-                sqlite3_bind_text(statement, (idx + 1), [obj UTF8String]+1, [(NSString*)obj length]-2, SQLITE_TRANSIENT);
-            else
-                sqlite3_bind_text(statement, (idx + 1), [obj UTF8String], [(NSString*)obj length], SQLITE_TRANSIENT);
+            sqlite3_bind_text(statement, (idx + 1), [obj UTF8String], -1, SQLITE_TRANSIENT);
         }
         
         // number
@@ -2238,35 +2315,154 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
             sqlite3_bind_double(statement, (idx + 1), [obj timeIntervalSince1970]);
         }
         
+        // data
+        else if([obj isKindOfClass:[NSData class] ]){
+            sqlite3_bind_blob(statement, (idx + 1), [obj bytes], [obj length], SQLITE_TRANSIENT);
+        }
+        
     }];
 }
 
-/*
- 
- 
- 
- */
+-(NSPredicate*)cleansePredicate:(NSComparisonPredicate*)comparisonPredicate OfVariable:(NSString*)variable{
+    NSString *oldPredString = [comparisonPredicate predicateFormat];
+    
+    if(comparisonPredicate.rightExpression.constantValue && [comparisonPredicate.rightExpression.constantValue isKindOfClass:[NSArray class]]){
+        NSString *leftExpressionString =  [comparisonPredicate.leftExpression.description stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"$%@.", variable] withString:@""];
+        NSExpression *newLeftExpression = [NSExpression expressionWithFormat: leftExpressionString ];
+        NSPredicate *returnPredicate=  [NSComparisonPredicate
+                                                predicateWithLeftExpression:newLeftExpression
+                                                  rightExpression:comparisonPredicate.rightExpression
+                                                         modifier: [comparisonPredicate comparisonPredicateModifier]
+                                                             type: [comparisonPredicate predicateOperatorType]
+                                                          options: [comparisonPredicate options]];
+        return returnPredicate;
+    }else{
+        NSString *newPredString = [oldPredString stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"$%@.", variable] withString:@""];
+        return [NSPredicate predicateWithFormat: newPredString];
+
+    }
+//    NSRange range = [newPredString rangeOfString:@"ANY "];
+//    if (range.location == 0)
+//    {
+//        newPredString = [newPredString stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"ANY "] withString:@""];
+//    }
+}
+
+-(NSPredicate*)rebuildExpressionPredicateAsForSubquery:(NSPredicate*)originalPredicate andReplaceVariable:(NSString*)variable{
+    
+    if([originalPredicate isKindOfClass:[NSCompoundPredicate class]]){
+        NSMutableArray *predicateArray = [NSMutableArray array];
+        for(NSPredicate *pred in ((NSCompoundPredicate*) originalPredicate).subpredicates){
+            [predicateArray addObject:[self rebuildExpressionPredicateAsForSubquery:pred andReplaceVariable: variable]];
+        }
+        NSCompoundPredicateType compPredType = [( (NSCompoundPredicate*) originalPredicate) compoundPredicateType];
+        if(compPredType == NSOrPredicateType){
+            return [NSCompoundPredicate orPredicateWithSubpredicates:predicateArray];
+        }else if(compPredType == NSAndPredicateType){
+            return [NSCompoundPredicate andPredicateWithSubpredicates:predicateArray];
+        }else if(compPredType == NSNotPredicateType){
+            return [NSCompoundPredicate notPredicateWithSubpredicate:[predicateArray objectAtIndex:0]];
+        }
+        
+    }
+    if( [originalPredicate isKindOfClass:[NSComparisonPredicate class]]){
+       return [self cleansePredicate: ((NSComparisonPredicate*)originalPredicate) OfVariable: variable ];
+    }
+        // ? What else is there?
+        return nil;
+}
+
 - (void)parseExpression:(NSExpression *)expression
             inPredicate:(NSComparisonPredicate *)predicate
          inFetchRequest:(NSFetchRequest *)request
+                context:context
                operator:(NSDictionary *)operator
                 operand:(id *)operand
                bindings:(id *)bindings {
+//    [self binaryValueFromExpression: expression];
+    
     NSExpressionType type = [expression expressionType];
     
     id value = nil;
+    NSEntityDescription *entity = [request entity];
+    NSString *tableName = [self tableNameForEntity:entity];
+    
+    if(type==NSSubqueryExpressionType){
+        
+    }
     
     // key path expressed as function expression
     if (type == NSFunctionExpressionType) {
         NSString *methodString = NSStringFromSelector(@selector(valueForKeyPath:));
         
+        NSExpression *argumentExpression;
         if ([[expression function] isEqualToString:methodString]) {
-            NSExpression *argumentExpression;
             argumentExpression = [[expression arguments] objectAtIndex:0];
             
             if ([argumentExpression expressionType] == NSConstantValueExpressionType) {
                 value = [argumentExpression constantValue];
                 type = NSKeyPathExpressionType;
+            }else{
+                NSString *aggregateFunctionString = [argumentExpression.constantValue stringByReplacingOccurrencesOfString:@"@" withString:@""];
+                NSExpression *subqueryExpression = expression.operand;
+                NSString *subqueryRelationString = ((NSExpression*)subqueryExpression.collection).keyPath;
+                NSRelationshipDescription *relationshipDesc = [[request.entity relationshipsByName] objectForKey:subqueryRelationString	] ;
+                
+                NSEntityDescription *subqueryEntity = [NSEntityDescription entityForName:relationshipDesc.destinationEntity.name inManagedObjectContext: context];
+                
+                NSFetchRequest *subqueryMockFetchRequest = [[NSFetchRequest alloc] init ];
+                [subqueryMockFetchRequest setEntity: subqueryEntity];
+                NSPredicate *predicate = [self rebuildExpressionPredicateAsForSubquery: subqueryExpression.predicate andReplaceVariable:subqueryExpression.variable];
+
+                
+                [subqueryMockFetchRequest setPredicate:predicate];
+                NSDictionary *whereClause = [self whereClauseWithFetchRequest:subqueryMockFetchRequest andContext:context];
+                NSString *relationColumn = [self foreignKeyColumnForRelationship: relationshipDesc.inverseRelationship];
+                [self tableNameForEntity:relationshipDesc.destinationEntity];
+                
+                NSMutableArray *joinStatementsArray = [NSMutableArray array];
+                NSMutableSet *joinStatementsSet = [NSMutableSet set];
+
+                NSString *predicateString = [[subqueryMockFetchRequest predicate] predicateFormat];
+                if (predicateString != nil ) {
+                    NSRegularExpression* regex = [NSRegularExpression regularExpressionWithPattern:@"\\b([a-zA-Z]\\w*\\.[^= ]+)\\b" options:0 error:nil];
+                    NSArray* dottedRelationMatches = [regex matchesInString:predicateString options:0 range:NSMakeRange(0, [predicateString length])];
+                    
+                    NSRegularExpression* regexForAnyAllRelations = [NSRegularExpression regularExpressionWithPattern:@"(?<=\\b(ANY|ALL)(\\s))(\\S+)" options:0 error:nil];
+                    NSArray* anyAllRelationsMatches = [regexForAnyAllRelations matchesInString:predicateString options:0 range:NSMakeRange(0, [predicateString length])];
+                    
+                    NSMutableArray *matches = [NSMutableArray arrayWithArray:anyAllRelationsMatches];
+                    [matches addObjectsFromArray:dottedRelationMatches];
+                    
+                    for ( NSTextCheckingResult* match in matches )
+                    {
+                        NSString* matchText = [predicateString substringWithRange:[match range]];
+                        if ([matchText hasSuffix:@".@count"]) {
+                            // @count queries should be handled by sub-expressions rather than joins
+                            continue;
+                        }
+                        if ([self maybeAddJoinStatementsForKey:matchText toStatementArray:joinStatementsArray withExistingStatementSet:joinStatementsSet rootEntity:subqueryEntity andJoinType:@"JOIN"]) {
+                            [subqueryMockFetchRequest setReturnsDistinctResults:YES];
+                        }
+                    }
+                }
+                NSString *joinStatementsString = @"";
+                if (joinStatementsArray.count > 0) {
+                     joinStatementsString = [joinStatementsArray componentsJoinedByString:@" "];
+                }
+
+                
+                NSString *subquery = [NSString stringWithFormat:@"( SELECT %@(*) FROM %@  %@  %@ AND %@ = %@.__objectId  )",
+                                      aggregateFunctionString,
+                                      [self tableNameForEntity:relationshipDesc.destinationEntity],
+                                      joinStatementsString,
+                                      [whereClause objectForKey:@"query"],
+                                      relationColumn,
+                                      [self tableNameForEntity: request.entity]
+                                    ];
+                *operand = subquery;
+                *bindings = [whereClause objectForKey:@"bindings"];
+                return;
             }
         }
     }
@@ -2276,28 +2472,66 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
         if (value == nil) {
             value = [expression keyPath];
         }
+        
+        NSMutableArray *pathComponents = [[value componentsSeparatedByString:@"."] mutableCopy];
+        NSString *firstCompontent = [pathComponents firstObject];
+        NSString *lastComponent = [pathComponents lastObject];
+        
         BOOL foundPredicate = NO;
-        NSEntityDescription *entity = [request entity];
         NSDictionary *properties = [entity propertiesByName];
+        id firstProperty = [properties objectForKey:firstCompontent];
+        id lastProperty = [properties objectForKey:lastComponent];
         id property = [properties objectForKey:value];
-        if ([property isKindOfClass:[NSRelationshipDescription class]]) {
-            NSRelationshipDescription * desc = (NSRelationshipDescription*)property;
-            if ([desc isToMany] && [[desc inverseRelationship] isToMany]) {
-                NSArray *keys = [value componentsSeparatedByString:@"."];
-                value = [NSString stringWithFormat:@"%@.%@",
-                         [self joinedTableNameForComponents:keys forRelationship:NO],
-                         @"__objectid"];
-                    
+        if ([property isKindOfClass:[NSRelationshipDescription class]] ||
+            ( ([firstProperty isKindOfClass:[NSRelationshipDescription class]] || [lastProperty isKindOfClass:[NSRelationshipDescription class]] ) && [value rangeOfString:@"@"].location == NSNotFound )) {
+            NSString *relationString;
+            
+            // We terminate when there is one item left since that is the field of interest
+            NSEntityDescription *currentEntity = request.entity;
+            int loopMax = (int) (pathComponents.count == 1 ? 1 : pathComponents.count - 1);
+            for (int i = 0 ; i < loopMax; i++) {
+                NSArray *miniKeyArray =   ( pathComponents.count > 1) ? [pathComponents subarrayWithRange: NSMakeRange(0, i+2)] : @[pathComponents[0], @"foobbbbears"] ;
+                // alt names for tables for safety
+                NSRelationshipDescription *relation = [[currentEntity relationshipsByName] objectForKey: pathComponents[i]];
+//                NSRelationshipDescription *inverse = [relation inverseRelationship];
+            
+                if(relation.isToMany){
+                    relationString = [self foreignKeyColumnForToManyRelationship:relation];
+                    tableName = [self joinedTableNameForComponents: miniKeyArray forRelationship: YES];
+                }else{
+                    relationString = [self foreignKeyColumnForRelationship:relation];
+                }
+                
+
+                NSString *nextComponent = i+1 < pathComponents.count ? pathComponents[i+1] : nil;
+                if(nextComponent){
+                    NSDictionary *foreignEntityRelations = relation.destinationEntity.relationshipsByName;
+                    NSRelationshipDescription *secondRelation = [foreignEntityRelations objectForKey:nextComponent];
+                    if(secondRelation){
+                        tableName = [self joinedTableNameForComponents: @[pathComponents[i+1], @""] forRelationship: YES];
+                        if(secondRelation.isToMany){
+                            relationString = [self foreignKeyColumnForToManyRelationship:secondRelation];
+                        }else{
+                            relationString = [self foreignKeyColumnForRelationship:secondRelation];
+                        }
+
+                    }else{
+                        relationString = nextComponent;
+                        tableName = [self joinedTableNameForComponents: miniKeyArray forRelationship: NO];
+                    }
+                }
+                currentEntity = relation.destinationEntity;
             }
-            else {
-                value = [NSString stringWithFormat:@"%@.%@",
-                         [self tableNameForEntity:entity],
-                         [self foreignKeyColumnForRelationship:property]];
-            }
+            
+            
+            
+            value = [NSString stringWithFormat:@"%@.%@",
+                     tableName,
+                     relationString];
         }
         else if (property != nil) {
             value = [NSString stringWithFormat:@"%@.%@",
-                     [self tableNameForEntity:entity],
+                     tableName,
                      value];
         }
         else if ([value rangeOfString:@"."].location != NSNotFound) {
@@ -2368,13 +2602,23 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
             if ([lastComponent isEqualToString:@"@count"] && pathComponents.count == 2){
                 NSRelationshipDescription *rel = [self relationshipForEntity:entity
                                                                         name:[pathComponents objectAtIndex:0]];
-                NSString * destinationName = [self tableNameForEntity:rel.destinationEntity];
+                NSRelationshipDescription *inverse = [rel inverseRelationship];
+                NSString * destinationName;
+                NSString * destinationColumn;
+                if(rel.isToMany && inverse.isToMany){
+                    destinationName = [self tableNameForRelationship: rel];
+                    destinationColumn = [self foreignKeyColumnForToManyRelationship: rel.inverseRelationship];
+                }else{
+                    destinationName  = [self tableNameForEntity:rel.destinationEntity];
+                    destinationColumn = [self foreignKeyColumnForRelationship:rel.inverseRelationship];
+                }
                 NSString * entityTableName = [self tableNameForEntity:entity];
+
                 value = [NSString stringWithFormat:@"(SELECT COUNT(*) FROM %@ [%@] WHERE [%@].%@ = %@.__objectid",
                          destinationName,
                          rel.name,
                          rel.name,
-                         [self foreignKeyColumnForRelationship:rel.inverseRelationship],
+                         destinationColumn,
                          entityTableName];
                 if (rel.destinationEntity.superentity != nil) {
                     value = [value stringByAppendingString:
@@ -2404,12 +2648,21 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
                 }];
                 
                 if ([property isKindOfClass:[NSRelationshipDescription class]]) {
-                    [request setReturnsDistinctResults:YES];
-                    lastComponentName = @"__objectID";
+                    NSRelationshipDescription *desc = (NSRelationshipDescription *)property;
+                    NSRelationshipDescription *inverse = [desc inverseRelationship];
+                    
+                    if ([desc isToMany] && [inverse isToMany]) {
+                        // last component is a many-to-many relation name
+                        [request setReturnsDistinctResults:YES];
+                        lastComponentName = @"__objectID";
+                    }
+                    else {
+                        lastComponentName = [self foreignKeyColumnForRelationship:property];
+                    }
                 }
                 
                 value = [NSString stringWithFormat:@"%@.%@",
-                     [self joinedTableNameForComponents:[pathComponents subarrayWithRange:NSMakeRange(0, pathComponents.count -1)] forRelationship:NO], lastComponentName];
+                     [self joinedTableNameForComponents:pathComponents forRelationship:NO], lastComponentName];
             }
         }
         *operand = value;
@@ -2430,6 +2683,7 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
                         [parameters componentsJoinedByString:@", "]];
         }
         else if ([value isKindOfClass:[NSDate class]]) {
+            value = [NSNumber numberWithDouble:[value timeIntervalSince1970]];
             *bindings = value;
             *operand = @"?";
         }
@@ -2465,37 +2719,52 @@ static void dbsqliteRegExp(sqlite3_context *context, int argc, const char **argv
                 // Just look for an id we know will never match
                 *bindings = @"-1";
             } else {
-                *bindings = value;
+                unsigned long long key = [[self referenceObjectForObjectID:objectId] unsignedLongLongValue];
+                *bindings = [NSString stringWithFormat:@"%llu",key];
             }
         }
         else if (!value || value == [NSNull null]) {
             *bindings = nil;
             *operand = @"NULL";
         }
+        else if([value isKindOfClass:[NSData class]]){
+            *bindings = value;
+            *operand = @"?";
+        }
         else {
             *bindings = value;
             *operand = @"?";
         }
+    }else if(type==NSAggregateExpressionType){
+        NSArray *array = (NSArray*)expression.constantValue;
+        *bindings = array;
+        *operand = [NSArray cmdArrayWithObject:@"?" times:array.count];
     }
     
     // unsupported type
     else {
-        NSLog(@"%s Unsupported expression type %ld", __PRETTY_FUNCTION__, (unsigned long)type);
+        NSLog(@"%s Unsupported expression type %ld %@ ", __PRETTY_FUNCTION__, (unsigned long)type, expression);
     }
 }
 
 - (NSString *)foreignKeyColumnForRelationshipP:(NSRelationshipDescription *)relationship {
     NSEntityDescription *destination = [relationship destinationEntity];
-    return [NSString stringWithFormat:@"%@.__objectid", [destination name]];
+    return [NSString stringWithFormat:@"%@.__objectid", destination.name];
 }
 
+- (NSString *)foreignKeyColumnForToManyRelationship:(NSRelationshipDescription *)relationship {
+    NSEntityDescription *destination = [relationship destinationEntity];
+    return [NSString stringWithFormat:@"%@__objectid", destination.name];
+}
+
+
 - (NSString *)foreignKeyColumnForRelationship:(NSRelationshipDescription *)relationship {
-    return [NSString stringWithFormat:@"%@__objectid", [relationship name]];
+    return [NSString stringWithFormat:@"%@__objectid", relationship.name];
 }
 
 - (NSString *) joinedTableNameForComponents: (NSArray *) componentsArray forRelationship:(BOOL)forRelationship{
     assert(componentsArray.count > 0);
-    NSString *tableName = [componentsArray componentsJoinedByString:@"."];
+    NSString *tableName = [[componentsArray subarrayWithRange:NSMakeRange(0, componentsArray.count - 1)] componentsJoinedByString:@"."];
     if (forRelationship) {
         return [NSString stringWithFormat: @"[%@_rel]", tableName];
     }
